@@ -1,0 +1,14 @@
+[
+	{
+		"ParameterKey": "EnvironmentName",
+		"ParameterValue": "Project2"
+    },
+    {
+        "ParameterKey": "ServerImageId",
+        "ParameterValue": "ami-0747bdcabd34c712a"
+    },
+    {
+        "ParameterKey": "AppServerInstanceType",
+        "ParameterValue": "t2.medium"
+    }
+]

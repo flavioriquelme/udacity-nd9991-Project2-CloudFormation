@@ -1,0 +1,222 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: ffernandez cloudformation project 2
+
+Parameters:
+  EnvironmentName:
+    Description: An environment name that will be prefixed to resource names
+    Type: String
+
+  ServerImageId:
+    Description: ImageId to be used by AppServers and BastionHost. Can be easily modified in case of need of AWS region change.
+    Type: String
+
+  AppServerInstanceType:
+    Description: Instance type to be used by AppServers. Can be easily modified in case of need of cost reduction.
+    Type: String
+
+  UdagramS3bucket:
+    Description: S3 bucket with app code to be deployed 
+    Type: "AWS::SSM::Parameter::Value<String>"
+    Default: "UdagramS3bucket"
+
+Resources:
+
+# IAM Role to allow access of the web and app servers to the S3 bucket with code to deploy 
+  CodeBucketIAMRole: 
+    Type: "AWS::IAM::Role"
+    Properties: 
+      AssumeRolePolicyDocument: 
+        Version: "2012-10-17"
+        Statement: 
+          - 
+            Effect: "Allow"
+            Principal: 
+              Service: 
+                - "s3.amazonaws.com"
+            Action: 
+              - "sts:AssumeRole"
+
+# S3 bucket IAM Instance Profile 
+  CodeBucketInstanceProfile: 
+    Type: "AWS::IAM::InstanceProfile"
+    Properties: 
+      Path: "/"
+      Roles: 
+        - Ref: "CodeBucketIAMRole"
+
+# Application Load Balancer Security Group
+  LBSG:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Allow http to our load balancer
+      VpcId:
+        Fn::ImportValue:
+          !Sub "${EnvironmentName}-VPCID"
+      SecurityGroupIngress:
+      - IpProtocol: tcp
+        FromPort: 80
+        ToPort: 80
+        CidrIp: 0.0.0.0/0
+      SecurityGroupEgress:
+      - IpProtocol: tcp
+        FromPort: 80
+        ToPort: 80
+        CidrIp: 0.0.0.0/0
+
+# Application Servers Security Group
+  AppServerSG:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Allow http inbound traffic from LB to our hosts, and unrestricted outbound traffic
+      VpcId:
+        Fn::ImportValue:
+          !Sub "${EnvironmentName}-VPCID"
+      SecurityGroupIngress:
+      - IpProtocol: tcp
+        FromPort: 80
+        ToPort: 80
+        CidrIp: 0.0.0.0/0
+      SecurityGroupEgress:
+      - IpProtocol: tcp
+        FromPort: 0
+        ToPort: 65535
+        CidrIp: 0.0.0.0/0
+
+# Application Servers Launch Configuration
+  AppLaunchConfig:
+    Type: AWS::AutoScaling::LaunchConfiguration
+    Properties:
+      UserData:
+        Fn::Base64: !Sub |
+          #!/bin/bash
+          apt-get update -y
+          apt-get install apache2 -y
+          systemctl start apache2.service
+          cd /var/www/html
+          echo "it works! Udagram, Udacity" > index.html
+      ImageId: !Ref 'ServerImageId'
+      IamInstanceProfile: 
+        Ref: "CodeBucketInstanceProfile"
+      SecurityGroups:
+      - Ref: AppServerSG
+      InstanceType: !Ref 'AppServerInstanceType'
+      BlockDeviceMappings:
+      - DeviceName: "/dev/sdk"
+        Ebs:
+          VolumeSize: '10'
+
+# Application Auto Scaling Group
+  AppAutoScalingGroup:
+    Type: AWS::AutoScaling::AutoScalingGroup
+    Properties:
+      VPCZoneIdentifier:
+      - Fn::ImportValue: 
+          !Sub "${EnvironmentName}-PRIV-NETS"
+      LaunchConfigurationName:
+        Ref: AppLaunchConfig
+      MinSize: '1'
+      MaxSize: '1'
+      TargetGroupARNs:
+      - Ref: AppTargetGroup
+
+# Application Load Balancer
+  AppLB:
+    Type: AWS::ElasticLoadBalancingV2::LoadBalancer
+    Properties:
+      Subnets:
+      - Fn::ImportValue: !Sub "${EnvironmentName}-PUB1-SN"
+      - Fn::ImportValue: !Sub "${EnvironmentName}-PUB2-SN"
+      SecurityGroups:
+      - Ref: LBSG
+
+# Application Load Balancer Listener
+  Listener:
+    Type: AWS::ElasticLoadBalancingV2::Listener
+    Properties:
+      DefaultActions:
+      - Type: forward
+        TargetGroupArn:
+          Ref: AppTargetGroup
+      LoadBalancerArn:
+        Ref: AppLB
+      Port: '80'
+      Protocol: HTTP
+
+# Application Load Balancer Target Group
+  AppTargetGroup:
+    Type: AWS::ElasticLoadBalancingV2::TargetGroup
+    Properties:
+      HealthCheckIntervalSeconds: 10
+      HealthCheckPath: /
+      HealthCheckProtocol: HTTP
+      HealthCheckTimeoutSeconds: 8
+      HealthyThresholdCount: 2
+      Port: 80
+      Protocol: HTTP
+      UnhealthyThresholdCount: 5
+      VpcId: 
+        Fn::ImportValue:
+          Fn::Sub: "${EnvironmentName}-VPCID"
+
+# Application Load Balancer Listener Rule
+  ALBListenerRule:
+      Type: AWS::ElasticLoadBalancingV2::ListenerRule
+      Properties:
+        Actions:
+        - Type: forward
+          TargetGroupArn: !Ref 'AppTargetGroup'
+        Conditions:
+        - Field: path-pattern
+          Values: [/]
+        ListenerArn: !Ref 'Listener'
+        Priority: 1
+
+# Bastion Host Security Group
+  BastionHostSG:
+    Type: 'AWS::EC2::SecurityGroup'
+    Properties:
+      GroupDescription: "Allow inbound access on SSH port 22 only, and from administrator IP address only"
+      VpcId:
+        Fn::ImportValue:
+          !Sub "${EnvironmentName}-VPCID"
+      SecurityGroupIngress: 
+      - IpProtocol: tcp
+        FromPort: 22
+        ToPort: 22
+        CidrIp: "177.140.117.241/32"
+
+# Bastion Host Server
+  BastionHostInstance:
+    Type: 'AWS::EC2::Instance'
+    Properties:
+      ImageId: !Ref 'ServerImageId'
+      InstanceType: "t3.micro"
+      KeyName: bastion-host-key
+      NetworkInterfaces:
+      - AssociatePublicIpAddress: "true"
+        DeviceIndex: "0"
+        SubnetId: 
+          Fn::ImportValue: 
+            !Sub "${EnvironmentName}-PUB1-SN"
+        GroupSet: 
+        - Ref: "BastionHostSG"
+
+# Deploy code S3 Bucket
+  CodeBucket:
+    Type: 'AWS::S3::Bucket'
+    DeletionPolicy: Retain
+    Properties:
+      BucketName: !Sub "${UdagramS3bucket}"
+
+Outputs:
+  CodeBucket: 
+    Description: A reference to the created S3 bucket
+    Value: !Ref 'CodeBucket'
+    Export:
+      Name: !Sub "${EnvironmentName}-CodeBucket"
+
+  LBPublicUrl:
+    Description: Public URL of the Application Load Balancer
+    Value: !Join ['',['http://',!GetAtt AppLB.DNSName]]
+    Export:
+      Name: !Sub "${EnvironmentName}-AppLB"
