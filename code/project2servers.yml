@@ -28,13 +28,21 @@ Resources:
       AssumeRolePolicyDocument: 
         Version: "2012-10-17"
         Statement: 
-          - 
-            Effect: "Allow"
-            Principal: 
-              Service: 
-                - "s3.amazonaws.com"
+          - Effect: 'Allow'
+            Principal:
+              Service:
+              - 'ec2.amazonaws.com'
             Action: 
-              - "sts:AssumeRole"
+            - 'sts:AssumeRole'
+      Path: /
+      Policies:
+        - PolicyName: root
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+            - Effect: 'Allow'
+              Action: 's3:*'
+              Resource: '*'
 
 # S3 bucket IAM Instance Profile 
   CodeBucketInstanceProfile: 
@@ -90,13 +98,13 @@ Resources:
         Fn::Base64: !Sub |
           #!/bin/bash
           apt-get update -y
+          apt-get install awscli -y
           apt-get install apache2 -y
           systemctl start apache2.service
           cd /var/www/html
-          echo "it works! Udagram, Udacity" > index.html
+          aws s3 cp s3://udagram-code/index.html .
       ImageId: !Ref 'ServerImageId'
-      IamInstanceProfile: 
-        Ref: "CodeBucketInstanceProfile"
+      IamInstanceProfile: !Ref 'CodeBucketInstanceProfile'
       SecurityGroups:
       - Ref: AppServerSG
       InstanceType: !Ref 'AppServerInstanceType'
@@ -114,8 +122,8 @@ Resources:
           !Sub "${EnvironmentName}-PRIV-NETS"
       LaunchConfigurationName:
         Ref: AppLaunchConfig
-      MinSize: '1'
-      MaxSize: '1'
+      MinSize: '4'
+      MaxSize: '4'
       TargetGroupARNs:
       - Ref: AppTargetGroup
 
@@ -201,20 +209,7 @@ Resources:
         GroupSet: 
         - Ref: "BastionHostSG"
 
-# Deploy code S3 Bucket
-  CodeBucket:
-    Type: 'AWS::S3::Bucket'
-    DeletionPolicy: Retain
-    Properties:
-      BucketName: !Sub "${UdagramS3bucket}"
-
 Outputs:
-  CodeBucket: 
-    Description: A reference to the created S3 bucket
-    Value: !Ref 'CodeBucket'
-    Export:
-      Name: !Sub "${EnvironmentName}-CodeBucket"
-
   LBPublicUrl:
     Description: Public URL of the Application Load Balancer
     Value: !Join ['',['http://',!GetAtt AppLB.DNSName]]
